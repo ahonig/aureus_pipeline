@@ -6,7 +6,7 @@ import re
 import sys
 import shutil
 import pathlib
-import subprocess
+from collections import Counter
 import libs.alinhamento_poli as alinhamento_poli
 import libs.alinhamento_poli_enterobacter as alinhamento_poli_enterobacter
 import libs.alinhamento_poli_acineto as alinhamento_poli_acineto
@@ -14,9 +14,9 @@ import libs.alinhamento_poli_pseudo as alinhamento_poli_pseudo
 import libs.alinhamento_outros_pseudo as alinhamento_outros_pseudo
 import libs.alinhamento_outros_kleb as alinhamento_outros_kleb
 import libs.save_result_mongo as save_result_mongo
+from libs.tools import _bn, _str, sp_runner
 
-_bn = lambda s: '' if s is None else s
-_str = lambda s: '' if s is None else str(s)
+
 sys.path[0:0] = ['/opt/pipeline/lib/']
 
 
@@ -111,10 +111,7 @@ R2 = sys.argv[11]
 ##################################################
 # rodar unicycler
 unicycler_exe = " ".join(['unicycler', '-1', f"{_bn(R1)}", '-2', f"{_bn(R2)}", '-o', f"{_bn(caminho1)}/{_bn(sample)}/unicycler", '--min_fasta_length', '500', '--mode', 'conservative', '-t', THREADS, '--spades_path', '/opt/SPAdes-3.13.0-Linux/bin/spades.py'])
-p2 = subprocess.Popen(unicycler_exe, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_uni = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {unicycler_exe} failes: {res_uni[1]}")
+sp_runner(unicycler_exe)
 
 # arquivo assembly.fasta da amostra
 
@@ -123,10 +120,7 @@ montagem = f"{_bn(caminho1)}/{_bn(sample)}/unicycler/assembly.fasta"
 ###############################################################################
 # rodar prokka
 prokka_exe = " ".join(['prokka', '--outdir', f"{_bn(caminho1)}/{_bn(sample)}/prokka", '--prefix', 'genome', f"{montagem}", '--force', "--cpus", "0"])  # --cpus 0 is ALL
-p2 = subprocess.Popen(prokka_exe, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_prk = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {prokka_exe} failes: {res_prk[1]}")
+sp_runner(prokka_exe)
 
 # EXCLUSIVO DO PIPELINE OUTPUT
 
@@ -143,7 +137,7 @@ imprimir = None
 gal_file = open('resultado_gal.txt', mode="a", encoding='utf-8')
 
 ##printar no arquivo final o nome da amostra na primeira linha
-gal_file.write(f"\nAmostra {_bn(sample)}\nResultados relevantes do sequenciamento do genoma total (WGS):")
+gal_file.write(f"\nAmostra {_bn(sample)}\nResultados relevantes do sequenciamento do genoma total (WGS):\n")
 
 ####################################################################################
 # SILENCIADO NO PIPELINE OUTPUT
@@ -160,28 +154,21 @@ gal_file.write(f"\nAmostra {_bn(sample)}\nResultados relevantes do sequenciament
 # Rodar o CheckM para saber qualidade da corrida
 # Copiar o arquivo assembly.fasta para a pasta do CheckM checkM_bins
 os.makedirs("checkM_bins", exist_ok=True)
-shutil.copyfile(os.path.join(".", f"{montagem}"), os.path.join(".", 'checkM_bins'))
+shutil.copy(os.path.join(".", f"{montagem}"), os.path.join(".", 'checkM_bins'))
 
 # rodar o CheckM
-
 checkM = " ".join(['checkm', 'lineage_wf', '-x', 'fasta', 'checkM_bins', 'checkM_bins', "--threads", THREADS, "--pplacer_threads", THREADS])
-p2 = subprocess.Popen(checkM, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_m = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {checkM} failes: {res_m[1]}")
+sp_runner(checkM)
 
 checkM_qa = " ".join(['checkm', 'qa', '-o', '2', '-f', f"checkM_bins/{_bn(sample)}_resultados", '--tab_table', 'checkM_bins/lineage.ms', 'checkM_bins', "--threads", THREADS])
-p2 = subprocess.Popen(checkM_qa, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_qa = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {checkM_qa} failes: {res_qa[1]}")
+sp_runner(checkM_qa)
 
 # apagar arquivos gerados, deixando apenas resultados
-shutil.rmtree('checkM_bins/bins')
-shutil.rmtree('checkM_bins/storage')
-shutil.rmtree('checkM_bins/assembly.fasta')
-shutil.rmtree('checkM_bins/lineage.ms')
-shutil.rmtree('checkM_bins/checkm.log')
+shutil.rmtree('checkM_bins/bins', ignore_errors=True)
+shutil.rmtree('checkM_bins/storage', ignore_errors=True)
+pathlib.Path('checkM_bins/assembly.fasta').unlink(missing_ok=True)
+pathlib.Path('checkM_bins/lineage.ms').unlink(missing_ok=True)
+pathlib.Path('checkM_bins/checkm.log').unlink(missing_ok=True)
 
 # Ler o arquivo do resultado e imprimir o que interessa na tabela
 # pegar o resultado da contaminacao
@@ -192,33 +179,30 @@ print('Salvando resultado no mongo relatorios')
 
 genome_size = None
 
-cabecera = 'S'
-
 with open(f"checkM_bins/{_bn(sample)}_resultados") as IN_check:
+    next(IN_check)  # ignore header
     for row in IN_check:
         # remove \n of the line end
         row = row.rstrip("\n")
         # separar as colunas do arquivo em elementos em um array
-        if cabecera == 'N':
-            lines = row.split("\t")
-            # print "$lines[2]\n";
-            # printar na tabela OUTPUT as informacoes de qualidade que interessam EXCLUSIVO TABELA OUTPUT
-            # print OUT2 "$lines[5]\t$lines[6]\t$lines[8]\t";
-            tipo_de_resultado = 'checkm_1'
-            imprimir = lines[5]
-            save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-            tipo_de_resultado = 'checkm_2'
-            imprimir = lines[6]
-            save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-            tipo_de_resultado = 'checkm_3'
-            imprimir = lines[8]
-            genome_size = imprimir
-            save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-            tipo_de_resultado = 'checkm_4'  # contigs
-            imprimir = lines[11]
-            save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-            contaminacao = lines[6]
-        cabecera = 'N'
+        lines = row.split("\t")
+        # print "$lines[2]\n";
+        # printar na tabela OUTPUT as informacoes de qualidade que interessam EXCLUSIVO TABELA OUTPUT
+        # print OUT2 "$lines[5]\t$lines[6]\t$lines[8]\t";
+        tipo_de_resultado = 'checkm_1'
+        imprimir = lines[5]
+        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        tipo_de_resultado = 'checkm_2'
+        imprimir = lines[6]
+        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        tipo_de_resultado = 'checkm_3'
+        imprimir = lines[8]
+        genome_size = imprimir
+        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        tipo_de_resultado = 'checkm_4'  # contigs
+        imprimir = lines[11]
+        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        contaminacao = lines[6]
 
 tipo_de_resultado = 'sample'
 imprimir = sample
@@ -232,39 +216,25 @@ check_especies = ''
 
 print('rodar o kraken')
 kraken = " ".join([f"{_bn(kraken2_install)}/kraken2", '--db', f"{_bn(kraken2_install)}/minikraken2_v2_8GB_201904_UPDATE", '--use-names', '--paired', f"{_bn(R1)}", f"{_bn(R2)}", '--output', 'out_kraken', "--threads", THREADS])
-p2 = subprocess.Popen(kraken, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_krk = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {kraken} failes: {res_krk[1]}")
+sp_runner(kraken)
 
-ordenado = []
-ordenado2 = []
+ordenado = Counter()
 with open("out_kraken", "r") as IN6:
     for row in IN6:
         row = row.rstrip('\n')
         out_kraken2 = row.split(r'	')
-        ordenado.append(out_kraken2[2])
-
-    for n in ordenado:
-        a = re.search(r'(\w*\s\w*\s).*\(taxid.*\)', n, re.IGNORECASE)
-        b = re.search(r'(\w+\ssp\.).*\(taxid.*\)', n, re.IGNORECASE)
-        c = re.search(r'^(\w+)\s\(taxid.*\)', n, re.IGNORECASE)
-        for x in (a, b, c):
-            if not x:
+        pttrn_a = re.search(r'(\w*\s\w*\s).*\(taxid.*\)', out_kraken2[2], re.IGNORECASE)
+        pttrn_b = re.search(r'(\w+\ssp\.).*\(taxid.*\)', out_kraken2[2], re.IGNORECASE)
+        pttrn_c = re.search(r'^(\w+)\s\(taxid.*\)', out_kraken2[2], re.IGNORECASE)
+        for matches in (pttrn_a, pttrn_b, pttrn_c):
+            if not matches:
                 continue
-            ordenado2.append(x.group(1))
+            ordenado[matches.group(1)] += 1
 
 # contar qts vezes aparece cada especie
-
-count_ordenado2 = {}
-for item in ordenado2:
-    if item not in count_ordenado2:
-        count_ordenado2[item] = 0
-    count_ordenado2[item] += 1
-
-repeticoes = sorted(count_ordenado2.keys(), key=lambda x: count_ordenado2[x])
-maior_repeticao = repeticoes[-1]
-segunda_repeticao = ""  # repeticoes[-2]
+repeticoes = ordenado.most_common(2)
+maior_repeticao = repeticoes[0][0]
+segunda_repeticao = repeticoes[1][0]
 
 # print "$maior_repeticao\n$segunda_repeticao\n";
 
@@ -369,6 +339,7 @@ elif resultado_final_especie in ('klebsiellapneumoniae', 'acinetobacterbaumannii
         lista = '/opt/genomas_enterobacter/fastANI_acineto/list-acineto'  # CAMBIAR
     elif resultado_final_especie in ("enterobactercloacae", "enterobacterhormaechei", "enterobacterasburiae",
                                      "enterobacterkobei", "enterobacterroggenkampii", "enterobacterludwigii"):
+        especie_mlst = "ecloacae"
         lista = '/opt/genomas_enterobacter/fastANI/list_entero'  # CAMBIAR
         fastANI_txt = 'Rodar fastANI para subespecie'
 
@@ -376,20 +347,17 @@ elif resultado_final_especie in ('klebsiellapneumoniae', 'acinetobacterbaumannii
     # Abrir o arquivo lista
 
     fastani = " ".join(['/opt/FastANI/fastANI', '-q', f"{_bn(caminho1)}/{_bn(sample)}/unicycler/assembly.fasta", '--rl', f"{lista}", '-o', f"{_bn(sample)}_out-fastANI", "--threads", THREADS])
-    p2 = subprocess.Popen(fastani, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-    res_fani = p2.communicate()
-    if p2.returncode:
-        raise Exception(f"system {fastani} failes: {res_fani[1]}")
+    sp_runner(fastani)
 
     # abrir output
     # Abrir o arquivo do output de distancia
     # array para guardar especies
-    count2 = 0
+
     print('resultado do fastANI')
     with open(f"{_bn(sample)}_out-fastANI", "r") as IN7:
         especiE = IN7.readline().rstrip("\n").split('\t')  # first line only
         preidentificacao = especiE[1].split("/")
-        identificacao = preidentificacao[-1].split("\.")  # TODO: confusion here about the index
+        identificacao = preidentificacao[-1].split(".")
         printar_especies = identificacao[0]
 
     if re.search(r'Enterobacter_cloacae_subsp_cloacae', printar_especies, re.IGNORECASE):
@@ -411,15 +379,14 @@ if float(contaminacao) <= 10.:
     imprimir = printar_especies
     save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
     # para o gal
-    gal_file.write(f"Espécie identificada: {_bn(imprimir)}")
-
-if float(contaminacao) > 10.:
+    gal_file.write(f"Espécie identificada: {_bn(imprimir)}\n")
+else:
     # print OUT2 "$printar_especies\t";
     tipo_de_resultado = 'especie'
-    imprimir = f"{maior_repeticao} {_bn(count_ordenado2.get(maior_repeticao, ''))} {segunda_repeticao} {_bn(count_ordenado2.get(segunda_repeticao, ''))}"
+    imprimir = f"{maior_repeticao} {_bn(repeticoes[0][1])} {segunda_repeticao} {_bn(repeticoes[1][1])}"
     save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
     # para o gal
-    gal_file.write(f"Espécie: CONTAMINAÇÃO {_bn(imprimir)}")
+    gal_file.write(f"Espécie: CONTAMINAÇÃO {_bn(imprimir)}\n")
 
 # else {
 #        	print OUT2 "$maior_repeticao $count_ordenado2{$maior_repeticao} $segunda_repeticao $count_ordenado2{$segunda_repeticao}\t";
@@ -429,10 +396,7 @@ if float(contaminacao) > 10.:
 # Rodar ABRICATE
 # Para resistencia usando o ResFinder (porque so tem resistencia adquirida)
 abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "resfinder", f"{_bn(caminho1)}/{_bn(sample)}/prokka/genome.ffn", ">", f"{_bn(sample)}_outAbricateRes", '--threads', THREADS])
-p2 = subprocess.Popen(abricante_exe, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_abri = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {abricante_exe} failes: {res_abri[1]}")
+sp_runner(abricante_exe)
 # system("$caminho_abricate --db resfinder $caminho1/$sample/ContigsMenor/prokka/genome.ffn > $sample\_outAbricateResMenor");
 
 # criar um array para guardar so os que tiverem identidade e cobertura alta
@@ -471,7 +435,7 @@ out_blast = ''
 genes = []
 
 # print gal
-gal_file.write('Genes de resistência encontrados no WGS: ')
+gal_file.write('Genes de resistência encontrados no WGS:\n')
 
 for n_l in selected:
     # print "$n\n";
@@ -559,10 +523,7 @@ save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprim
 ################################################################################################
 # Rodar abricate para VFDB (Virulence factor)
 abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "vfdb", f"{_bn(caminho1)}/{_bn(sample)}/prokka/genome.ffn", ">", f"{_bn(sample)}_outAbricateVFDB", '--threads', THREADS])
-p2 = subprocess.Popen(abricante_exe, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_abri2 = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {abricante_exe} failes: {res_abri2[1]}")
+sp_runner(abricante_exe, pipeout=True)
 # system("$caminho_abricate --db resfinder $caminho1/$sample/ContigsMenor/prokka/genome.ffn > $sample\_outAbricateResMenor");
 
 # abrir o resultado do abricate_VFDB
@@ -607,15 +568,12 @@ for _d in select_imprimir3:
 tipo_de_resultado = 'VFDB'
 save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
 
-shutil.rmtree(f"{_bn(sample)}_outAbricateVFDB")
+# pathlib.Path(f"{_bn(sample)}_outAbricateVFDB").unlink(missing_ok=True)
 
 #########################################################################################################
 # Rodar abricate para PlasmidFinder
 abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "plasmidfinder", f"{_bn(caminho1)}/{_bn(sample)}/unicycler/assembly.fasta", ">", f"{_bn(sample)}_outAbricatePlasmid", '--threads', THREADS])
-p2 = subprocess.Popen(abricante_exe, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_abri3 = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {abricante_exe} failes: {res_abri3[1]}")
+sp_runner(abricante_exe, pipeout=True)
 # system("$caminho_abricate --db resfinder $caminho1/$sample/ContigsMenor/prokka/genome.ffn > $sample\_outAbricateResMenor");
 
 # abrir o resultado do abricate_Plasmid
@@ -641,15 +599,14 @@ with open(f"{_bn(sample)}_outAbricatePlasmid", "r") as IN11:
             selected4.append(f"{_bn(row)}")
 # ler o array selected
 
+imprimir = 'Not found'
 if not selected4:
     # print OUT2 "Nao encontrado\t";
     tipo_de_resultado = 'plasmid'
-    imprimir = 'Not found'
     save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
     # para o gal
-    gal_file.write(f"Plasmídeos encontrados: {_bn(imprimir)}")
 else:
-    gal_file.write('Plasmídeos encontrados:')
+    imprimir = ""
     for n_l in selected4:
         # print "$n\n";
         # separar as colunas do arquivo em elementos de um array
@@ -657,8 +614,8 @@ else:
         # print OUT2 "$lines_blast[5] ID:$lines_blast[10] COV_Q:$lines_blast[9] COV_DB:$lines_blast[6]\|";
         out_blast4 = lines_blast[5] + 'ID' + ':' + lines_blast[10] + ' ' + 'COV_Q:' + lines_blast[9] + ' ' + 'COV_DB:' + lines_blast[6] + '|' + ' '
         select_imprimir4.append(out_blast4)
-        gal_file.write(f"{_bn(lines_blast[5])}")
-    # print OUT2 "\t";
+        imprimir += f"\n{lines_blast[5]}"
+gal_file.write(f"Plasmídeos encontrados:{_bn(imprimir)}\n")
 
 # zerar a variarvel para concatenar
 imprimir = ''
@@ -675,7 +632,7 @@ else:
 tipo_de_resultado = 'plasmid'
 save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
 
-shutil.rmtree(f"{_bn(sample)}_outAbricatePlasmid")
+# pathlib.Path(f"{_bn(sample)}_outAbricatePlasmid").unlink(missing_ok=True)
 
 ################################################################################################
 
@@ -689,57 +646,52 @@ if (especie_mlst == 'Nao disponivel') or (especie_mlst == ''):  # mod 26-08-22
     imprimir = 'Not available for this species'  # mod 26.08.22
     save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
     # para o gal
-    gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)")
+    gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
 else:
     # mod 26-08-22
     docker = " ".join(['docker', 'run', '--rm', '-i', '-v', f"{_bn(mlst_install)}/mlst_db:/database", '-v', f"{_bn(caminho1)}/{_bn(sample)}/unicycler:/workdir", 'mlst', '-i', 'assembly.fasta', '-o', '.', '-s', f"{especie_mlst}"])
-
     # rodar o mlst
-    p2 = subprocess.Popen(docker, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-    res_docker = p2.communicate()
-    if p2.returncode:
-        raise Exception(f"system {docker} failes: {res_docker[1]}")
+    sp_runner(docker)
 # mod
 
 ST = None
 print('ler o resultado do mlst')
-mlst_file = pathlib.Path(MLST_result)
-mlst_file.touch(exist_ok=True)  # will create file, if it exists will do nothing
+mlst_json = pathlib.Path(MLST_result)
+mlst_json.touch(exist_ok=True)  # will create file, if it exists will do nothing
 
-with open(mlst_file, "r") as IN3:
-    for row3 in IN3:
-        row3 = row3.rstrip("\n")
-        a = re.search(r'.*sequence_type":\s"(\d{1,4})".*', row3, re.IGNORECASE)
-        b = re.search(r'.*sequence_type":\s"(\d*!,\d*!)".*', row3, re.IGNORECASE)
-        c = re.search(r'.*sequence_type":\s"(\d{1,4}\*)".*', row3, re.IGNORECASE)
-        for m in (a, b, c):
-            if not m:
-                continue
-            ST = m.group(1)
-            # print OUT2 "$ST\t";
-            tipo_de_resultado = 'mlst'
-            imprimir = ST
-            save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-            # para o gal
-            gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)")
-        m = re.match(r'nearest_sts":\s"((\d*,)*\d*)".*', row3, re.IGNORECASE)
-        if m:
-            nearest_sts = m.group(1)
-            # print OUT2 "Nearest $nearest_sts\t";
-            tipo_de_resultado = 'mlst'
-            imprimir = f"Nearest {nearest_sts}"
-            save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-            # para o gal
-            gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)")
-        m = re.match(r'.*sequence_type":\s"(Unknown)".*', row3, re.IGNORECASE)
-        if m:
-            ST = m.group(1)
-            # print OUT2 "Unknown\t";
-            tipo_de_resultado = 'mlst'
-            imprimir = 'Unknown'
-            save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-            # para o gal
-            gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)")
+with open(mlst_json, "r") as IN3:
+    line = IN3.readline().rstrip("\n")  # single line file
+    a = re.search(r'.*sequence_type":\s"(\d{1,4})".*', line, re.IGNORECASE)
+    b = re.search(r'.*sequence_type":\s"(\d*!,\d*!)".*', line, re.IGNORECASE)
+    c = re.search(r'.*sequence_type":\s"(\d{1,4}\*)".*', line, re.IGNORECASE)
+    for m in (a, b, c):
+        if not m:
+            continue
+        ST = m.group(1)
+        # print OUT2 "$ST\t";
+        tipo_de_resultado = 'mlst'
+        imprimir = ST
+        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        # para o gal
+        gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
+    m = re.search(r'nearest_sts":\s"((\d*,)*\d*)".*', line, re.IGNORECASE)
+    if m:
+        nearest_sts = m.group(1)
+        # print OUT2 "Nearest $nearest_sts\t";
+        tipo_de_resultado = 'mlst'
+        imprimir = f"Nearest {nearest_sts}"
+        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        # para o gal
+        gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
+    m = re.search(r'.*sequence_type":\s"(Unknown)".*', line, re.IGNORECASE)
+    if m:
+        ST = m.group(1)
+        # print OUT2 "Unknown\t";
+        tipo_de_resultado = 'mlst'
+        imprimir = 'Unknown'
+        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        # para o gal
+        gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
 
 # zerar a variarvel para concatenar
 
@@ -773,56 +725,25 @@ print('rodar coverage')
 
 # figuring out if file is compressed or not
 catcmd = "cat"
-ftype = f"file {_bn(R1)}"
-p2 = subprocess.Popen(ftype, stdout=subprocess.PIPE, shell=True)
-res_neko = p2.communicate()
-if res_neko and str(res_neko[0]).find("gzip compressed") > -1:
+res = sp_runner(f"file {_bn(R1)}", pipeout=True)
+if res and str(res).find("gzip compressed") > -1:
     catcmd = "zcat"
 
-zcat = " ".join([f"echo $({catcmd} {_bn(R1)} | wc -l)/4 | bc > out_R1 "])
-p2 = subprocess.Popen(zcat, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_r1 = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {zcat} failes: {res_r1[1]}")
-
-n_reads1 = .0
-# guardar o numero de reads
-with open('out_R1', "r") as IN:
-    for row in IN:
-        row = row.rstrip("\n")
-        n_reads1 = row
+zcat = " ".join([f"echo $({catcmd} {_bn(R1)} | wc -l)/4 | bc"])
+res_r1 = sp_runner(zcat, pipeout=True)
+n_reads1 = res_r1.decode("utf-8").rstrip("\n")
 
 # o mesmo para o arquivo R2
-zcat2 = " ".join([f"echo $({catcmd} {_bn(R2)} | wc -l)/4 | bc > out_R2"])
-p2 = subprocess.Popen(zcat2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_r2 = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {zcat2} failes: {res_r2[1]}")
-
-n_reads2 = .0
-# guardar o numero de reads
-with open('out_R2', "r") as IN:
-    for row in IN:
-        row = row.rstrip("\n")
-        n_reads2 = row
+zcat2 = " ".join([f"echo $({catcmd} {_bn(R2)} | wc -l)/4 | bc"])
+res_r2 = sp_runner(zcat2, pipeout=True)
+n_reads2 = res_r2.decode("utf-8").rstrip("\n")
 
 soma_reads = (float(n_reads1) + float(n_reads2))
 
 ###calcular tamanho medio das reads, vou usar só as R1 como base
-zcat3 = " ".join([f"{catcmd} {_bn(R1)} | awk '{{if(NR%4==2) {{count++; bases += length}} }} END{{print bases/count}}' > average_length"])
-p2 = subprocess.Popen(zcat3, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-res_avg = p2.communicate()
-if p2.returncode:
-    raise Exception(f"system {zcat3} failes: {res_avg[1]}")
-
-# guardar o tamanho médio das reads
-
-average_length2 = 0
-# guardar o numero de reads
-with open('average_length', "r") as IN:
-    for row in IN:
-        row = row.rstrip("\n")
-        average_length2 = row
+zcat3 = " ".join([f"{catcmd} {_bn(R1)} | awk '{{if(NR%4==2) {{count++; bases += length}} }} END{{print bases/count}}'"])
+res_avg = sp_runner(zcat3, pipeout=True)
+average_length2 = res_avg.decode("utf-8").rstrip("\n")
 
 gal_file.close()
 
@@ -831,8 +752,3 @@ coverage = (float(average_length2) * soma_reads) / float(genome_size)
 tipo_de_resultado = 'coverage'
 imprimir = coverage
 save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-
-for chau in ('out_R1', 'out_R2', 'average_length'):
-    shutil.rmtree(chau)
-
-sys.exit(0)
