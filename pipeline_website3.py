@@ -6,15 +6,13 @@ import re
 import sys
 import shutil
 import pathlib
-from collections import Counter
 import libs.alinhamento_poli as alinhamento_poli
 import libs.alinhamento_poli_enterobacter as alinhamento_poli_enterobacter
 import libs.alinhamento_poli_acineto as alinhamento_poli_acineto
 import libs.alinhamento_poli_pseudo as alinhamento_poli_pseudo
 import libs.alinhamento_outros_pseudo as alinhamento_outros_pseudo
 import libs.alinhamento_outros_kleb as alinhamento_outros_kleb
-import libs.save_result_mongo as save_result_mongo
-from libs.tools import _bn, _str, sp_runner
+from libs.tools import _bn, _str, sp_runner, count_kraken_words, get_abricate_result, MongoSaver
 
 
 sys.path[0:0] = ['/opt/pipeline/lib/']
@@ -95,7 +93,6 @@ print('Parametros: ')
 print(f"caminho: {_bn(caminho1)} ")
 print(f"Sample: {_bn(sample)} ")
 print(f"SAmple2: {_bn(sample2)} ")
-print(f"caminho1: {_bn(caminho1)} ")
 print(f"camino abricate: {_bn(caminho_abricate)} ")
 print(f"camino abricate caminho_output: {_bn(caminho_output)} ")
 print(f"camino abricate kmerdb_install: {_bn(kmerdb_install)} ")
@@ -107,6 +104,8 @@ print(f"unicycler: {_bn(unicycler)} ")
 
 R1 = sys.argv[10]
 R2 = sys.argv[11]
+
+mongo_saver = MongoSaver(caminho_output, sample2)  # mongodb instance saver
 
 ##################################################
 # rodar unicycler
@@ -189,47 +188,26 @@ with open(f"checkM_bins/{_bn(sample)}_resultados") as IN_check:
         # print "$lines[2]\n";
         # printar na tabela OUTPUT as informacoes de qualidade que interessam EXCLUSIVO TABELA OUTPUT
         # print OUT2 "$lines[5]\t$lines[6]\t$lines[8]\t";
-        tipo_de_resultado = 'checkm_1'
-        imprimir = lines[5]
-        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-        tipo_de_resultado = 'checkm_2'
-        imprimir = lines[6]
-        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-        tipo_de_resultado = 'checkm_3'
-        imprimir = lines[8]
-        genome_size = imprimir
-        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-        tipo_de_resultado = 'checkm_4'  # contigs
-        imprimir = lines[11]
-        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        genome_size = lines[8]
+        mongo_saver.save('checkm_1', lines[5])
+        mongo_saver.save('checkm_2', lines[6])
+        mongo_saver.save('checkm_3', lines[8])
+        mongo_saver.save('checkm_4', lines[11])  # contigs
         contaminacao = lines[6]
 
-tipo_de_resultado = 'sample'
-imprimir = sample
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-
+mongo_saver.save('sample', sample)
 #########################################################################################################################
 # Identificar especie usando o kraken
-
-# onde sera guardada o nome da especie
-check_especies = ''
 
 print('rodar o kraken')
 kraken = " ".join([f"{_bn(kraken2_install)}/kraken2", '--db', f"{_bn(kraken2_install)}/minikraken2_v2_8GB_201904_UPDATE", '--use-names', '--paired', f"{_bn(R1)}", f"{_bn(R2)}", '--output', 'out_kraken', "--threads", THREADS])
 sp_runner(kraken)
 
-ordenado = Counter()
-with open("out_kraken", "r") as IN6:
-    for row in IN6:
-        row = row.rstrip('\n')
-        out_kraken2 = row.split(r'	')
-        pttrn_a = re.search(r'(\w*\s\w*\s).*\(taxid.*\)', out_kraken2[2], re.IGNORECASE)
-        pttrn_b = re.search(r'(\w+\ssp\.).*\(taxid.*\)', out_kraken2[2], re.IGNORECASE)
-        pttrn_c = re.search(r'^(\w+)\s\(taxid.*\)', out_kraken2[2], re.IGNORECASE)
-        for matches in (pttrn_a, pttrn_b, pttrn_c):
-            if not matches:
-                continue
-            ordenado[matches.group(1)] += 1
+print("splitting output into %s equal files" % THREADS)
+preffix = "krk"
+splitter = " ".join(["split", "--numeric-suffixes=1", "-n", f"l/{THREADS}", "out_kraken", preffix])
+sp_runner(splitter)
+ordenado = count_kraken_words(int(THREADS), preffix)
 
 # contar qts vezes aparece cada especie
 repeticoes = ordenado.most_common(2)
@@ -238,6 +216,7 @@ segunda_repeticao = repeticoes[1][0]
 
 # print "$maior_repeticao\n$segunda_repeticao\n";
 
+# onde sera guardada o nome da especie
 check_especies = maior_repeticao
 
 # apagar o arquivo do resultado
@@ -375,16 +354,13 @@ print('contaminacao...')
 # printar no arquivo final o nome da especie
 if float(contaminacao) <= 10.:
     # print OUT2 "$printar_especies\t";
-    tipo_de_resultado = 'especie'
-    imprimir = printar_especies
-    save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+    mongo_saver.save('especie', printar_especies)
     # para o gal
-    gal_file.write(f"Espécie identificada: {_bn(imprimir)}\n")
+    gal_file.write(f"Espécie identificada: {_bn(printar_especies)}\n")
 else:
     # print OUT2 "$printar_especies\t";
-    tipo_de_resultado = 'especie'
     imprimir = f"{maior_repeticao} {_bn(repeticoes[0][1])} {segunda_repeticao} {_bn(repeticoes[1][1])}"
-    save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+    mongo_saver.save('especie', imprimir)
     # para o gal
     gal_file.write(f"Espécie: CONTAMINAÇÃO {_bn(imprimir)}\n")
 
@@ -395,41 +371,11 @@ else:
 ###############################################################################################
 # Rodar ABRICATE
 # Para resistencia usando o ResFinder (porque so tem resistencia adquirida)
-abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "resfinder", f"{_bn(caminho1)}/{_bn(sample)}/prokka/genome.ffn", ">", f"{_bn(sample)}_outAbricateRes", '--threads', THREADS])
+abricante_out = f"{_bn(sample)}_outAbricateRes"
+abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "resfinder", f"{_bn(caminho1)}/{_bn(sample)}/prokka/genome.ffn", ">", abricante_out, '--threads', THREADS])
 sp_runner(abricante_exe)
-# system("$caminho_abricate --db resfinder $caminho1/$sample/ContigsMenor/prokka/genome.ffn > $sample\_outAbricateResMenor");
-
-# criar um array para guardar so os que tiverem identidade e cobertura alta
-
-selected = []
-rowQty = 0
-with open(f"{_bn(sample)}_outAbricateRes", "r") as IN8:
-    for row in IN8:
-        rowQty += 1
-        if rowQty <= 4:
-            continue
-        # remove \n of the line end
-        row = row.rstrip("\n")
-        # print "$row\n";
-        # separar as colunas do arquivo em elementos em um array
-        lines = row.split("\t")
-        # print "$lines[10]\n";
-        # printar no array selected so quem tem identidade maior que 90
-        if (float(lines[9]) > 90.0) and (float(lines[10]) > 90.0):
-            selected.append(f"{_bn(row)}")
-            print(f"{_bn(row)}")
-        # if para o operon de Van no Resfinder
-
-        if re.match(r'Van.*', lines[5], re.I):
-            selected.append(f"{_bn(row)}")
-            print(f"{_bn(row)}")
-
-# Analisar o array dos contigs
-# ler o array selected
-
-
+selected = get_abricate_result(abricante_out, resistencia=True)
 select_imprimir = []
-out_blast = ''
 
 # criar um @ para cada classe de antibioticos
 genes = []
@@ -499,140 +445,57 @@ for n_l in selected:
 
 # imprimir resultados com a classe do antimicrobiano
 
-# zerar a variarvel para concatenar
-imprimir = ''
-
-for _d in genes:
-    imprimir = _str(imprimir) + _str(_d)
-    imprimir = _str(imprimir) + '<br>'
-
-tipo_de_resultado = 'gene'  # MOD
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-
-# zerar a variarvel para concatenar
-imprimir = ''
-
-# colocar o resultado que estava salvo no @select_imprimir  na variável $imprimir
-for _d in select_imprimir:
-    imprimir = _str(imprimir) + _str(_d)
-    imprimir = _str(imprimir) + '<br>'
-
-tipo_de_resultado = 'resfinder'
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+mongo_saver.save("gene", "<br>".join(genes))
+mongo_saver.save("resfinder", "<br>".join(select_imprimir))
 
 ################################################################################################
 # Rodar abricate para VFDB (Virulence factor)
-abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "vfdb", f"{_bn(caminho1)}/{_bn(sample)}/prokka/genome.ffn", ">", f"{_bn(sample)}_outAbricateVFDB", '--threads', THREADS])
-sp_runner(abricante_exe, pipeout=True)
-# system("$caminho_abricate --db resfinder $caminho1/$sample/ContigsMenor/prokka/genome.ffn > $sample\_outAbricateResMenor");
-
-# abrir o resultado do abricate_VFDB
-# criar um array para guardar so os que tiverem identidade e cobertura alta
-
-selected3 = []
-select_imprimir3 = []
-out_blast3 = ''
-qty = 0
-with open(f"{_bn(sample)}_outAbricateVFDB", "r") as IN10:
-    for row in IN10:
-        qty += 1
-        if qty <= 4:
-            continue
-        # remove \n of the line end
-        row = row.rstrip("\n")
-        # print "$row\n";
-        # separar as colunas do arquivo em elementos em um array
-        lines = row.split("\t")
-        # print "$lines[10]\n";
-        # printar no array selected so quem tem coverage maior que 90
-        if (float(lines[9]) > 90.0) and (float(lines[10]) > 90.0):
-            selected3.append(f"{_bn(row)}")
+abricante_out = f"{_bn(sample)}_outAbricateVFDB"
+abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "vfdb", f"{_bn(caminho1)}/{_bn(sample)}/prokka/genome.ffn", ">", abricante_out, '--threads', THREADS])
+sp_runner(abricante_exe)
+selected = get_abricate_result(abricante_out)
+select_imprimir = []
 
 # ler o array selected
-for n_l in selected3:
+for n_l in selected:
     # print "$n\n";
     # separar as colunas do arquivo em elementos de um array
     lines_blast = n_l.split("\t")
     # print OUT2 "$lines_blast[5] ID:$lines_blast[10] COV_Q:$lines_blast[9] COV_DB:$lines_blast[6]\|";
-    out_blast3 = f"{lines_blast[1]}: {lines_blast[5]} {lines_blast[13]} ID:{lines_blast[10]} COV_Q:{lines_blast[9]} COV_DB:{lines_blast[6]}| "
-    select_imprimir3.append(out_blast3)
+    out_blast = f"{lines_blast[1]}: {lines_blast[5]} {lines_blast[13]} ID:{lines_blast[10]} COV_Q:{lines_blast[9]} COV_DB:{lines_blast[6]}| "
+    select_imprimir.append(out_blast)
 
-# zerar a variarvel para concatenar
-imprimir = ''
-
-# colocar o resultado que estava salvo no @select_imprimir  na variável $imprimir
-for _d in select_imprimir3:
-    imprimir = _str(imprimir) + _str(_d)
-    imprimir = _str(imprimir) + '<br>'
-
-tipo_de_resultado = 'VFDB'
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-
-# pathlib.Path(f"{_bn(sample)}_outAbricateVFDB").unlink(missing_ok=True)
+mongo_saver.save('VFDB', "<br>".join(select_imprimir))
+pathlib.Path(abricante_out).unlink(missing_ok=True)
 
 #########################################################################################################
 # Rodar abricate para PlasmidFinder
-abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "plasmidfinder", f"{_bn(caminho1)}/{_bn(sample)}/unicycler/assembly.fasta", ">", f"{_bn(sample)}_outAbricatePlasmid", '--threads', THREADS])
-sp_runner(abricante_exe, pipeout=True)
-# system("$caminho_abricate --db resfinder $caminho1/$sample/ContigsMenor/prokka/genome.ffn > $sample\_outAbricateResMenor");
+abricante_out = f"{_bn(sample)}_outAbricatePlasmid"
+abricante_exe = " ".join([f"{_bn(caminho_abricate)}", "--db", "plasmidfinder", f"{_bn(caminho1)}/{_bn(sample)}/unicycler/assembly.fasta", ">", abricante_out, '--threads', THREADS])
+sp_runner(abricante_exe)
+selected = get_abricate_result(abricante_out)
+select_imprimir = []
 
-# abrir o resultado do abricate_Plasmid
-# criar um array para guardar so os que tiverem identidade e cobertura alta
-selected4 = []
-select_imprimir4 = []
-out_blast4 = None
-qxty = 0
-
-with open(f"{_bn(sample)}_outAbricatePlasmid", "r") as IN11:
-    for row in IN11:
-        qxty += 1
-        if qxty <= 4:
-            continue
-        # remove \n of the line end
-        row = row.rstrip("\n")
-        # print "$row\n";
-        # separar as colunas do arquivo em elementos em um array
-        lines = row.split("\t")
-        # print "$lines[10]\n";
-        # printar no array selected so quem tem coverage maior que 90
-        if (float(lines[9]) > 90.0) and (float(lines[10]) > 90.0):
-            selected4.append(f"{_bn(row)}")
 # ler o array selected
-
 imprimir = 'Not found'
-if not selected4:
+if not selected:
     # print OUT2 "Nao encontrado\t";
-    tipo_de_resultado = 'plasmid'
-    save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+    mongo_saver.save('plasmid', imprimir)
     # para o gal
 else:
     imprimir = ""
-    for n_l in selected4:
+    for n_l in selected:
         # print "$n\n";
         # separar as colunas do arquivo em elementos de um array
         lines_blast = n_l.split("\t")
         # print OUT2 "$lines_blast[5] ID:$lines_blast[10] COV_Q:$lines_blast[9] COV_DB:$lines_blast[6]\|";
-        out_blast4 = lines_blast[5] + 'ID' + ':' + lines_blast[10] + ' ' + 'COV_Q:' + lines_blast[9] + ' ' + 'COV_DB:' + lines_blast[6] + '|' + ' '
-        select_imprimir4.append(out_blast4)
+        out_blast = lines_blast[5] + 'ID' + ':' + lines_blast[10] + ' ' + 'COV_Q:' + lines_blast[9] + ' ' + 'COV_DB:' + lines_blast[6] + '|' + ' '
+        select_imprimir.append(out_blast)
         imprimir += f"\n{lines_blast[5]}"
 gal_file.write(f"Plasmídeos encontrados:{_bn(imprimir)}\n")
 
-# zerar a variarvel para concatenar
-imprimir = ''
-
-# colocar o resultado que estava salvo no @select_imprimir  na variável $imprimir se não tiver vazia
-if not select_imprimir4:
-    # nao fazer nada se estiver vazio
-    pass
-else:
-    for _d in select_imprimir4:
-        imprimir = _str(imprimir) + _str(_d)
-        imprimir = _str(imprimir) + '<br>'
-
-tipo_de_resultado = 'plasmid'
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-
-# pathlib.Path(f"{_bn(sample)}_outAbricatePlasmid").unlink(missing_ok=True)
+mongo_saver.save("plasmid", "<br>".join(select_imprimir))
+pathlib.Path(abricante_out).unlink(missing_ok=True)
 
 ################################################################################################
 
@@ -642,9 +505,8 @@ MLST_result = f"{_bn(caminho1)}/{_bn(sample)}/unicycler/data.json"
 # se nao tem mlst disponivel, ai tem que avisar
 if (especie_mlst == 'Nao disponivel') or (especie_mlst == ''):  # mod 26-08-22
     # print OUT2 "Nao disponivel\t";
-    tipo_de_resultado = 'mlst'
     imprimir = 'Not available for this species'  # mod 26.08.22
-    save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+    mongo_saver.save('mlst', imprimir)
     # para o gal
     gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
 else:
@@ -669,56 +531,31 @@ with open(mlst_json, "r") as IN3:
             continue
         ST = m.group(1)
         # print OUT2 "$ST\t";
-        tipo_de_resultado = 'mlst'
         imprimir = ST
-        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        mongo_saver.save('mlst', imprimir)
         # para o gal
         gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
     m = re.search(r'nearest_sts":\s"((\d*,)*\d*)".*', line, re.IGNORECASE)
     if m:
         nearest_sts = m.group(1)
-        # print OUT2 "Nearest $nearest_sts\t";
-        tipo_de_resultado = 'mlst'
-        imprimir = f"Nearest {nearest_sts}"
-        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-        # para o gal
-        gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
+        if nearest_sts:
+            # print OUT2 "Nearest $nearest_sts\t";
+            imprimir = f"Nearest {nearest_sts}"
+            mongo_saver.save('mlst', imprimir)
+            # para o gal
+            gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
     m = re.search(r'.*sequence_type":\s"(Unknown)".*', line, re.IGNORECASE)
     if m:
         ST = m.group(1)
         # print OUT2 "Unknown\t";
-        tipo_de_resultado = 'mlst'
         imprimir = 'Unknown'
-        save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+        mongo_saver.save('mlst', imprimir)
         # para o gal
         gal_file.write(f"Clone ST {_bn(imprimir)} (determinado por MLST)\n")
 
-# zerar a variarvel para concatenar
-
-imprimir = ''
-
-# colocar o resultado que estava salvo no @select_imprimir  na variável $imprimir
-for _d in result2:
-    imprimir = _str(imprimir) + _str(_d)
-    imprimir = _str(imprimir) + '<br>'
-
-tipo_de_resultado = 'mutacoes_poli'
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
-# para o gal
-gal_file.write(f"Mutações polimixina: {_bn(imprimir)}\n")
-
-# zerar a variarvel para concatenar
-imprimir = ''
-
-# colocar o resultado que estava salvo no @select_imprimir  na variável $imprimir
-for _d in result3:
-    imprimir = _str(imprimir) + _str(_d)
-    imprimir = _str(imprimir) + '<br>'
-
-# print OUT2 "@result3\t";
-
-tipo_de_resultado = 'mutacoes_outras'
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+mongo_saver.save('mutacoes_poli', "<br>".join(result2))
+gal_file.write("Mutações polimixina: %s" % "<br>".join(result2))
+mongo_saver.save('mutacoes_outras', "<br>".join(result3))
 
 ######################################################################
 print('rodar coverage')
@@ -749,6 +586,4 @@ gal_file.close()
 
 coverage = (float(average_length2) * soma_reads) / float(genome_size)
 
-tipo_de_resultado = 'coverage'
-imprimir = coverage
-save_result_mongo.save_result(caminho_output, sample2, tipo_de_resultado, imprimir)
+mongo_saver.save('coverage', coverage)
